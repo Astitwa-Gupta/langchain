@@ -1,0 +1,85 @@
+import re
+
+def is_junk_filename(name: str) -> bool:
+    """
+    Decide if a filename is machine-generated noise.
+    """
+    # Extract base name (without extension)
+    base = name.lower().split('.')[0]
+
+    # Rule 1: No vowels => junk
+    if not re.search(r'[aeiou]', base):
+        return True
+
+    # Rule 2: Long consonant cluster >= 4 => junk
+    if re.search(r'[bcdfghjklmnpqrstvwxyz]{4,}', base):
+        return True
+
+    # Rule 3: Mostly consonants (>75%) => junk
+    if len(base) > 3:
+        consonants = len(re.sub(r'[aeiou0-9_]', '', base))
+        if consonants / len(base) > 0.75:
+            return True
+
+    # Rule 4: Very short names < 4 chars (unless known)
+    meaningful_short = {"lab", "doc", "img", "pdf", "drug", "dose"}
+    if len(base) < 4 and base not in meaningful_short:
+        return True
+
+    # Rule 5: Contains weird mix of letters+numbers
+    if re.match(r'^[a-z0-9]{6,}$', base) and not re.search(r'[aeiou]', base):
+        return True
+
+    return False
+
+
+def clean_brackets_and_junk(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned = text
+
+    # -------------------------------------
+    # Detect markdown image patterns
+    # ![alt](filename)
+    # -------------------------------------
+    pattern = r'!\[[^\]]*\]\(([^)]+)\)'
+
+    def replace_image(match):
+        filename = match.group(1)
+        if is_junk_filename(filename):
+            return ""  # Remove entire image call
+        return match.group(0)  # Keep if meaningful
+
+    cleaned = re.sub(pattern, replace_image, cleaned)
+
+    # -------------------------------------
+    # Remove empty brackets
+    # -------------------------------------
+    cleaned = re.sub(r'\(\s*\)', '', cleaned)
+    cleaned = re.sub(r'\[\s*\]', '', cleaned)
+
+    # -------------------------------------
+    # Remove 2–4 char junk bracket content
+    # -------------------------------------
+    short_junk_pattern = r'\(([A-Za-z0-9]{2,4})\)'
+
+    def filter_short(match):
+        val = match.group(1)
+
+        # Numbers allowed
+        if val.isdigit():
+            return match.group(0)
+
+        # Has vowels → looks meaningful
+        if re.search(r'[aeiou]', val.lower()):
+            return match.group(0)
+
+        # Otherwise: junk
+        return ""
+
+    cleaned = re.sub(short_junk_pattern, filter_short, cleaned)
+
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+
+    return cleaned.strip()
