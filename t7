@@ -1,125 +1,111 @@
 import re
-import re
+import os
 
-def remove_inline_noise(text: str) -> str:
-    if not text:
-        return text
-
-    cleaned = text
-
-    # -------------------------------------------
-    # REMOVE: Strong/italic markdown noise
-    # **text**, ***text***, *text*
-    # -------------------------------------------
-    cleaned = re.sub(r'\*{1,3}[^*\n]{1,80}\*{1,3}', '', cleaned)
-
-    # -------------------------------------------
-    # REMOVE: Bracketed CTA marketing blocks
-    # [ learn more ], [ click here ], [ ** learn how >** ]
-    # -------------------------------------------
-    cta_terms = r"(learn|more|click|how|here|discover|start|find|support)"
-    cleaned = re.sub(rf'\[[^\]]*{cta_terms}[^\]]*\]', '', cleaned, flags=re.IGNORECASE)
-
-    # -------------------------------------------
-    # REMOVE: Parentheses with only noise or symbols
-    # (***), (--), (levo sodium) etc.
-    # -------------------------------------------
-    cleaned = re.sub(r'\(\s*[\W_]{1,20}\s*\)', '', cleaned)
-    cleaned = re.sub(r'\(\s*[a-zA-Z]{1,3}\s*\)', '', cleaned)
-
-    # -------------------------------------------
-    # REMOVE: Sequences of symbols (marketing dividers)
-    # ---- , **** , ==== , >>>>
-    # -------------------------------------------
-    cleaned = re.sub(r'[-=*>{}<]{4,}', '', cleaned)
-
-    # -------------------------------------------
-    # Collapse extra whitespace
-    # -------------------------------------------
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
-
-    return cleaned.strip()
-
+# Detect whether a filename looks meaningful or junk
 def is_junk_filename(name: str) -> bool:
-    """
-    Decide if a filename is machine-generated noise.
-    """
-    # Extract base name (without extension)
-    base = name.lower().split('.')[0]
+    name = name.lower().strip()
 
-    # Rule 1: No vowels => junk
+    # Remove extension
+    base, ext = os.path.splitext(name)
+
+    # No extension → suspicious
+    if not ext:
+        return True
+
+    # Allowed meaningful characters
+    # If base contains only random consonants, it's junk
+    if re.fullmatch(r'[bcdfghjklmnpqrstvwxyz]{4,}', base):
+        return True
+
+    # Contains no vowels → likely junk
     if not re.search(r'[aeiou]', base):
         return True
 
-    # Rule 2: Long consonant cluster >= 4 => junk
-    if re.search(r'[bcdfghjklmnpqrstvwxyz]{4,}', base):
+    # Too short (1–3 chars)
+    if len(base) <= 3:
         return True
 
-    # Rule 3: Mostly consonants (>75%) => junk
-    if len(base) > 3:
-        consonants = len(re.sub(r'[aeiou0-9_]', '', base))
-        if consonants / len(base) > 0.75:
-            return True
-
-    # Rule 4: Very short names < 4 chars (unless known)
-    meaningful_short = {"lab", "doc", "img", "pdf", "drug", "dose"}
-    if len(base) < 4 and base not in meaningful_short:
-        return True
-
-    # Rule 5: Contains weird mix of letters+numbers
-    if re.match(r'^[a-z0-9]{6,}$', base) and not re.search(r'[aeiou]', base):
+    # Mostly numbers → junk
+    if re.fullmatch(r'\d{3,}', base):
         return True
 
     return False
 
 
-def clean_brackets_and_junk(text: str) -> str:
-    if not text:
-        return text
-
+def clean_text(text: str) -> str:
     cleaned = text
 
-    # -------------------------------------
-    # Detect markdown image patterns
-    # ![alt](filename)
-    # -------------------------------------
-    pattern = r'!\[[^\]]*\]\(([^)]+)\)'
+    # ----------------------------------------
+    # 1. Remove image/file markdown with junk filenames
+    # ----------------------------------------
+    def remove_junk_file(match):
+        full = match.group(0)
+        filepath = match.group(2)  # the part inside parentheses
 
-    def replace_image(match):
-        filename = match.group(1)
+        filename = os.path.basename(filepath)
         if is_junk_filename(filename):
-            return ""  # Remove entire image call
-        return match.group(0)  # Keep if meaningful
+            return ""  # remove entire markdown including []()
+        return full  # keep if meaningful
 
-    cleaned = re.sub(pattern, replace_image, cleaned)
+    cleaned = re.sub(
+        r'!\[[^\]]*\]\((.*?)\)', 
+        remove_junk_file, 
+        cleaned
+    )
 
-    # -------------------------------------
-    # Remove empty brackets
-    # -------------------------------------
-    cleaned = re.sub(r'\(\s*\)', '', cleaned)
-    cleaned = re.sub(r'\[\s*\]', '', cleaned)
+    cleaned = re.sub(
+        r'\([^\)]*\.(png|jpg|jpeg|gif|pdf|docx|pptx)\)', 
+        lambda m: "" if is_junk_filename(os.path.basename(m.group(0)[1:-1])) else m.group(0),
+        cleaned,
+        flags=re.IGNORECASE
+    )
 
-    # -------------------------------------
-    # Remove 2–4 char junk bracket content
-    # -------------------------------------
-    short_junk_pattern = r'\(([A-Za-z0-9]{2,4})\)'
+    # ----------------------------------------
+    # 2. Remove parentheses/brackets with junk, random chars, or emptiness
+    # ----------------------------------------
+    cleaned = re.sub(
+        r'[\(\[\{]\s{0,5}[\]\)\}]', 
+        '', 
+        cleaned
+    )
 
-    def filter_short(match):
-        val = match.group(1)
+    # Remove brackets with 2–4 random non-word chars (no letters/numbers)
+    cleaned = re.sub(
+        r'[\(\[\{][^a-zA-Z0-9]{2,4}[\)\]\}]',
+        '',
+        cleaned
+    )
 
-        # Numbers allowed
-        if val.isdigit():
-            return match.group(0)
+    # Remove bracketed text containing mostly random characters
+    cleaned = re.sub(
+        r'[\(\[\{]([bcdfghjklmnpqrstvwxyz]{4,})[\)\]\}]',
+        '',
+        cleaned,
+        flags=re.IGNORECASE
+    )
 
-        # Has vowels → looks meaningful
-        if re.search(r'[aeiou]', val.lower()):
-            return match.group(0)
+    # ----------------------------------------
+    # 3. Remove markdown noise: *, ***, bold garbage etc.
+    # ----------------------------------------
+    cleaned = re.sub(r'\*{1,3}', '', cleaned)  # remove */**/***
 
-        # Otherwise: junk
-        return ""
+    # ----------------------------------------
+    # 4. Extra bracket patterns like: [ ** learn how >**]
+    # ----------------------------------------
+    cleaned = re.sub(
+        r'\[ *[^a-zA-Z0-9]+ *\]',
+        '',
+        cleaned
+    )
 
-    cleaned = re.sub(short_junk_pattern, filter_short, cleaned)
+    # Remove strange patterns like [ > > ]
+    cleaned = re.sub(
+        r'\[\s*[\>\-\/\|\*\!]+\s*\]',
+        '',
+        cleaned
+    )
 
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    # Clean extra spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
-    return cleaned.strip()
+    return cleaned
